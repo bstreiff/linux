@@ -281,4 +281,22 @@
 /* MediaTek BTIF */
 #define PORT_MTK_BTIF	117
 
+/* RDA UART */
+#define PORT_RDA	118
+
+/* Socionext Milbeaut UART */
+#define PORT_MLB_USIO	119
+
+/* SiFive UART */
+#define PORT_SIFIVE_V0	120
+
+/* Sunix UART */
+#define PORT_SUNIX	121
+
+/* Freescale LINFlexD UART */
+#define PORT_LINFLEXUART	122
+
+/* National Instruments 16550 UART */
+#define PORT_NI16550	123
+
 #endif /* _UAPILINUX_SERIAL_CORE_H */
