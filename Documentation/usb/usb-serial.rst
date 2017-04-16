@@ -494,6 +494,20 @@ Moschip MCS7720, MCS7715 driver
       with this driver with a simple addition to the usb_device_id table.  I
       don't have one of these devices, so I can't say for sure.
 
+National Instruments USB Serial driver
+--------------------------------------
+
+  This driver supports the following devices made by National Instruments:
+
+       - USB-232
+       - USB-232/2
+       - USB-232/4
+       - USB-485
+       - USB-485/2
+       - USB-485/4
+       - NI ExpressCard-8420/2
+       - NI ExpressCard-8421/2
+
 Generic Serial driver
 ---------------------
 

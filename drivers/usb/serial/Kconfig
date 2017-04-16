@@ -443,6 +443,15 @@ config USB_SERIAL_NAVMAN
 	  To compile this driver as a module, choose M here: the
 	  module will be called navman.
 
+config USB_SERIAL_NI
+	tristate "USB NI USB-232, USB-485, ExpressCard devices"
+	help
+	  Say Y here if you want to use the National Instruments USB-232, USB-485,
+	  and ExpressCard serial adapters.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called ni_usbserial.
+
 config USB_SERIAL_PL2303
 	tristate "USB Prolific 2303 Single Port Serial Driver"
 	help
