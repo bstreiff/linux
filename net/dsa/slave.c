@@ -264,10 +264,34 @@ dsa_slave_fdb_dump(struct sk_buff *skb, struct netlink_callback *cb,
 
 static int dsa_slave_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 {
+	struct dsa_slave_priv *p = netdev_priv(dev);
+	struct dsa_switch *ds = p->dp->ds;
+	int port = p->dp->index;
+
 	if (!dev->phydev)
 		return -ENODEV;
 
-	return phy_mii_ioctl(dev->phydev, ifr, cmd);
+	switch (cmd) {
+	case SIOCGMIIPHY:
+	case SIOCGMIIREG:
+	case SIOCSMIIREG:
+		if (dev->phydev)
+			return phy_mii_ioctl(dev->phydev, ifr, cmd);
+		else
+			return -EOPNOTSUPP;
+	case SIOCGHWTSTAMP:
+		if (ds->ops->port_hwtstamp_get)
+			return ds->ops->port_hwtstamp_get(ds, port, ifr);
+		else
+			return -EOPNOTSUPP;
+	case SIOCSHWTSTAMP:
+		if (ds->ops->port_hwtstamp_set)
+			return ds->ops->port_hwtstamp_set(ds, port, ifr);
+		else
+			return -EOPNOTSUPP;
+	default:
+		return -EOPNOTSUPP;
+	}
 }
 
 static int dsa_slave_port_attr_set(struct net_device *dev,
@@ -876,6 +900,18 @@ static int dsa_slave_set_rxnfc(struct net_device *dev,
 	return ds->ops->set_rxnfc(ds, p->dp->index, nfc);
 }
 
+static int dsa_slave_get_ts_info(struct net_device *dev,
+				 struct ethtool_ts_info *ts)
+{
+	struct dsa_slave_priv *p = netdev_priv(dev);
+	struct dsa_switch *ds = p->dp->ds;
+
+	if (!ds->ops->get_ts_info)
+		return -EOPNOTSUPP;
+
+	return ds->ops->get_ts_info(ds, p->dp->index, ts);
+}
+
 static const struct ethtool_ops dsa_slave_ethtool_ops = {
 	.get_drvinfo		= dsa_slave_get_drvinfo,
 	.get_regs_len		= dsa_slave_get_regs_len,
@@ -896,6 +932,7 @@ static const struct ethtool_ops dsa_slave_ethtool_ops = {
 	.set_link_ksettings	= phy_ethtool_set_link_ksettings,
 	.get_rxnfc		= dsa_slave_get_rxnfc,
 	.set_rxnfc		= dsa_slave_set_rxnfc,
+	.get_ts_info		= dsa_slave_get_ts_info,
 };
 
 static const struct net_device_ops dsa_slave_netdev_ops = {
