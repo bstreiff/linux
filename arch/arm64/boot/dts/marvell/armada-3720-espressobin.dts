@@ -59,6 +59,25 @@
 		device_type = "memory";
 		reg = <0x00000000 0x00000000 0x00000000 0x20000000>;
 	};
+
+	/*
+	 * TODO: figure out how to refer to the gpio for this correctly
+	 */
+	/*
+	vcc_sd_reg1: regulator@0 {
+		compatible = "regulator-gpio";
+		regulator-name = "vcc_sd1";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-boot-on;
+
+		gpios = <&gpionb 4 GPIO_ACTIVE_HIGH>;
+		gpios-states = <0>;
+		states = <1800000 0x1
+			  3300000 0x0>;
+		enable-active-high;
+	};
+	*/
 };
 
 /* J9 */
@@ -78,6 +97,85 @@
 
 /* J7 */
 &usb3 {
+	status = "okay";
+};
+
+/* J8 */
+&usb2 {
+	status = "okay";
+};
+
+/* eMMC */
+&sdhci0 {
+	status = "disabled";
+
+	marvell,pad-type = "fixed-1-8v";
+	non-removable;
+	bus-width = <8>;
+	mmc-ddr-1_8v;
+	mmc-hs400-1_8v;
+	marvell,xenon-emmc;
+	marvell,xenon-tun-count = <9>;
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&emmc_nb_pins>;
+};
+
+/* SD card */
+&sdhci1 {
+	status = "okay";
+
+	wp-inverted;
+	bus-width = <4>;
+	broken-cd;
+	no-1-8-v;
+	/* vqmmc-supply = <&vcc_sd_reg1>; */
+	marvell,pad-type = "sd";
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&sdio0_pins>;
+};
+
+&spi0 {
+	status = "okay";
+
+	/* W25Q32DW */
+	spi-flash@0 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <104000000>;
+		m25,fast-read;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&spi_quad_pins>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			/*
+			 * TODO: this is mostly guesswork
+			 */
+			partition@0 {
+				label = "bootloaders";
+				reg = <0 0x180000>;
+			};
+			partition@180000 {
+				label = "u-boot env";
+				reg = <0x180000 0x10000>;
+			};
+			partition@200000 {
+				label = "leftovers";
+				reg = <0x200000 0x200000>;
+			};
+		};
+	};
+};
+
+&i2c0 {
 	status = "okay";
 };
 
