@@ -22,6 +22,7 @@
 #include <linux/sched/deadline.h>
 #include <linux/timer.h>
 #include <linux/ww_mutex.h>
+#include <linux/blkdev.h>
 
 #include "rtmutex_common.h"
 
@@ -234,25 +235,18 @@ static inline bool unlock_rt_mutex_safe(struct rt_mutex *lock,
 }
 #endif
 
-#define STEAL_NORMAL  0
-#define STEAL_LATERAL 1
 /*
  * Only use with rt_mutex_waiter_{less,equal}()
  */
-#define task_to_waiter(p)	\
-	&(struct rt_mutex_waiter){ .prio = (p)->prio, .deadline = (p)->dl.deadline }
+#define task_to_waiter(p) &(struct rt_mutex_waiter) \
+	{ .prio = (p)->prio, .deadline = (p)->dl.deadline, .task = (p) }
 
 static inline int
 rt_mutex_waiter_less(struct rt_mutex_waiter *left,
-		     struct rt_mutex_waiter *right, int mode)
+		     struct rt_mutex_waiter *right)
 {
-	if (mode == STEAL_NORMAL) {
-		if (left->prio < right->prio)
-			return 1;
-	} else {
-		if (left->prio <= right->prio)
-			return 1;
-	}
+	if (left->prio < right->prio)
+		return 1;
 
 	/*
 	 * If both waiters have dl_prio(), we check the deadlines of the
@@ -285,6 +279,27 @@ rt_mutex_waiter_equal(struct rt_mutex_waiter *left,
 	return 1;
 }
 
+#define STEAL_NORMAL  0
+#define STEAL_LATERAL 1
+
+static inline int
+rt_mutex_steal(struct rt_mutex *lock, struct rt_mutex_waiter *waiter, int mode)
+{
+	struct rt_mutex_waiter *top_waiter = rt_mutex_top_waiter(lock);
+
+	if (waiter == top_waiter || rt_mutex_waiter_less(waiter, top_waiter))
+		return 1;
+
+	/*
+	 * Note that RT tasks are excluded from lateral-steals
+	 * to prevent the introduction of an unbounded latency.
+	 */
+	if (mode == STEAL_NORMAL || rt_task(waiter->task))
+		return 0;
+
+	return rt_mutex_waiter_equal(waiter, top_waiter);
+}
+
 static void
 rt_mutex_enqueue(struct rt_mutex *lock, struct rt_mutex_waiter *waiter)
 {
@@ -296,7 +311,7 @@ rt_mutex_enqueue(struct rt_mutex *lock, struct rt_mutex_waiter *waiter)
 	while (*link) {
 		parent = *link;
 		entry = rb_entry(parent, struct rt_mutex_waiter, tree_entry);
-		if (rt_mutex_waiter_less(waiter, entry, STEAL_NORMAL)) {
+		if (rt_mutex_waiter_less(waiter, entry)) {
 			link = &parent->rb_left;
 		} else {
 			link = &parent->rb_right;
@@ -335,7 +350,7 @@ rt_mutex_enqueue_pi(struct task_struct *task, struct rt_mutex_waiter *waiter)
 	while (*link) {
 		parent = *link;
 		entry = rb_entry(parent, struct rt_mutex_waiter, pi_tree_entry);
-		if (rt_mutex_waiter_less(waiter, entry, STEAL_NORMAL)) {
+		if (rt_mutex_waiter_less(waiter, entry)) {
 			link = &parent->rb_left;
 		} else {
 			link = &parent->rb_right;
@@ -846,6 +861,7 @@ static int rt_mutex_adjust_prio_chain(struct task_struct *task,
  * @task:   The task which wants to acquire the lock
  * @waiter: The waiter that is queued to the lock's wait tree if the
  *	    callsite called task_blocked_on_lock(), otherwise NULL
+ * @mode:   Lock steal mode (STEAL_NORMAL, STEAL_LATERAL)
  */
 static int __try_to_take_rt_mutex(struct rt_mutex *lock,
 				  struct task_struct *task,
@@ -885,14 +901,11 @@ static int __try_to_take_rt_mutex(struct rt_mutex *lock,
 	 */
 	if (waiter) {
 		/*
-		 * If waiter is not the highest priority waiter of
-		 * @lock, give up.
+		 * If waiter is not the highest priority waiter of @lock,
+		 * or its peer when lateral steal is allowed, give up.
 		 */
-		if (waiter != rt_mutex_top_waiter(lock)) {
-			/* XXX rt_mutex_waiter_less() ? */
+		if (!rt_mutex_steal(lock, waiter, mode))
 			return 0;
-		}
-
 		/*
 		 * We can acquire the lock. Remove the waiter from the
 		 * lock waiters tree.
@@ -909,25 +922,12 @@ static int __try_to_take_rt_mutex(struct rt_mutex *lock,
 		 * not need to be dequeued.
 		 */
 		if (rt_mutex_has_waiters(lock)) {
-			struct task_struct *pown = rt_mutex_top_waiter(lock)->task;
-
-			if (task != pown)
-				return 0;
-
 			/*
-			 * Note that RT tasks are excluded from lateral-steals
-			 * to prevent the introduction of an unbounded latency.
+			 * If @task->prio is greater than the top waiter
+			 * priority (kernel view), or equal to it when a
+			 * lateral steal is forbidden, @task lost.
 			 */
-			if (rt_task(task))
-				mode = STEAL_NORMAL;
-			/*
-			 * If @task->prio is greater than or equal to
-			 * the top waiter priority (kernel view),
-			 * @task lost.
-			 */
-			if (!rt_mutex_waiter_less(task_to_waiter(task),
-						  rt_mutex_top_waiter(lock),
-						  mode))
+			if (!rt_mutex_steal(lock, task_to_waiter(task), mode))
 				return 0;
 			/*
 			 * The current top waiter stays enqueued. We
@@ -1849,6 +1849,19 @@ rt_mutex_slowlock(struct rt_mutex *lock, int state,
 	return ret;
 }
 
+static inline int __rt_mutex_slowtrylock(struct rt_mutex *lock)
+{
+	int ret = try_to_take_rt_mutex(lock, current, NULL);
+
+	/*
+	 * try_to_take_rt_mutex() sets the lock waiters bit
+	 * unconditionally. Clean this up.
+	 */
+	fixup_rt_mutex_waiters(lock);
+
+	return ret;
+}
+
 /*
  * Slow path try-lock function:
  */
@@ -1871,13 +1884,7 @@ static inline int rt_mutex_slowtrylock(struct rt_mutex *lock)
 	 */
 	raw_spin_lock_irqsave(&lock->wait_lock, flags);
 
-	ret = try_to_take_rt_mutex(lock, current, NULL);
-
-	/*
-	 * try_to_take_rt_mutex() sets the lock waiters bit
-	 * unconditionally. Clean this up.
-	 */
-	fixup_rt_mutex_waiters(lock);
+	ret = __rt_mutex_slowtrylock(lock);
 
 	raw_spin_unlock_irqrestore(&lock->wait_lock, flags);
 
@@ -1968,6 +1975,15 @@ rt_mutex_fastlock(struct rt_mutex *lock, int state,
 	if (likely(rt_mutex_cmpxchg_acquire(lock, NULL, current)))
 		return 0;
 
+	/*
+	 * If rt_mutex blocks, the function sched_submit_work will not call
+	 * blk_schedule_flush_plug (because tsk_is_pi_blocked would be true).
+	 * We must call blk_schedule_flush_plug here, if we don't call it,
+	 * a deadlock in device mapper may happen.
+	 */
+	if (unlikely(blk_needs_flush_plug(current)))
+		blk_schedule_flush_plug(current);
+
 	return slowfn(lock, state, NULL, RT_MUTEX_MIN_CHAINWALK, ww_ctx);
 }
 
@@ -1984,6 +2000,9 @@ rt_mutex_timed_fastlock(struct rt_mutex *lock, int state,
 	if (chwalk == RT_MUTEX_MIN_CHAINWALK &&
 	    likely(rt_mutex_cmpxchg_acquire(lock, NULL, current)))
 		return 0;
+
+	if (unlikely(blk_needs_flush_plug(current)))
+		blk_schedule_flush_plug(current);
 
 	return slowfn(lock, state, timeout, chwalk, ww_ctx);
 }
@@ -2090,6 +2109,11 @@ int __sched rt_mutex_futex_trylock(struct rt_mutex *lock)
 	return rt_mutex_slowtrylock(lock);
 }
 
+int __sched __rt_mutex_futex_trylock(struct rt_mutex *lock)
+{
+	return __rt_mutex_slowtrylock(lock);
+}
+
 /**
  * rt_mutex_timed_lock - lock a rt_mutex interruptible
  *			the timeout structure is provided
@@ -2189,11 +2213,12 @@ void __sched rt_mutex_futex_unlock(struct rt_mutex *lock)
 {
 	WAKE_Q(wake_q);
 	WAKE_Q(wake_sleeper_q);
+	unsigned long flags;
 	bool postunlock;
 
-	raw_spin_lock_irq(&lock->wait_lock);
+	raw_spin_lock_irqsave(&lock->wait_lock, flags);
 	postunlock = __rt_mutex_futex_unlock(lock, &wake_q, &wake_sleeper_q);
-	raw_spin_unlock_irq(&lock->wait_lock);
+	raw_spin_unlock_irqrestore(&lock->wait_lock, flags);
 
 	if (postunlock)
 		rt_mutex_postunlock(&wake_q, &wake_sleeper_q);
@@ -2475,6 +2500,7 @@ bool rt_mutex_cleanup_proxy_lock(struct rt_mutex *lock,
 		remove_waiter(lock, waiter);
 		cleanup = true;
 	}
+
 	/*
 	 * try_to_take_rt_mutex() sets the waiter bit unconditionally. We might
 	 * have to fix that up.

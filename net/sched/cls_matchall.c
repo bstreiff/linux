@@ -32,6 +32,7 @@ static int mall_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 	if (tc_skip_sw(head->flags))
 		return -1;
 
+	*res = head->res;
 	return tcf_exts_exec(skb, &head->exts, res);
 }
 
@@ -93,6 +94,8 @@ static bool mall_destroy(struct tcf_proto *tp, bool force)
 	if (!head)
 		return true;
 
+	tcf_unbind_filter(tp, &head->res);
+
 	if (tc_should_offload(dev, tp, head->flags))
 		mall_destroy_hw_filter(tp, head, (unsigned long) head);
 
@@ -108,6 +111,7 @@ static unsigned long mall_get(struct tcf_proto *tp, u32 handle)
 static const struct nla_policy mall_policy[TCA_MATCHALL_MAX + 1] = {
 	[TCA_MATCHALL_UNSPEC]		= { .type = NLA_UNSPEC },
 	[TCA_MATCHALL_CLASSID]		= { .type = NLA_U32 },
+	[TCA_MATCHALL_FLAGS]		= { .type = NLA_U32 },
 };
 
 static int mall_set_parms(struct net *net, struct tcf_proto *tp,
