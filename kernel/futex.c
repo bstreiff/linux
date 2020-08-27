@@ -2448,6 +2448,17 @@ retry:
 		 * Since we just failed the trylock; there must be an owner.
 		 */
 		newowner = rt_mutex_owner(&pi_state->pi_mutex);
+		// <HACK>
+		if (!newowner) {
+			/* issue memory barrier, try again */
+			smb_mb();
+			newowner = rt_mutex_owner(&pi_state->pi_mutex);
+			if (newowner) {
+				printk(KERN_ERR "fixup_pi_state_owner: we didn't think we had a newowner, but a memory barrier let us find one!\n");
+				printk(KERN_ERR "fixup_pi_state_owner: this strongly suggests memory concurrency shenanigans are to blame.\n");
+			}
+		}
+		// </HACK>
 		WARN_ON(!newowner);
 
 		/*
